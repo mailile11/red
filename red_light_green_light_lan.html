@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Red Light, Green Light — LAN Multiplayer</title>
+<style>
+:root{--bg:#10131c;--panel:#1b2030;--ink:#f5f7ff;--muted:#aeb7ce;--green:#38df86;--red:#ff5263;--gold:#ffd166}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 50% 0,#202941,#10131c 65%);color:var(--ink);font:16px system-ui,Segoe UI,sans-serif;min-height:100vh;display:flex;justify-content:center;padding:18px}
+main{width:min(100%,1000px)}h1{margin:0;font-size:clamp(1.7rem,4vw,2.6rem);letter-spacing:-.04em}p{color:var(--muted);margin:.35rem 0 1rem}.top{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px}.pill{padding:7px 12px;border-radius:99px;background:#252d40;color:var(--muted);font-size:.9rem}.layout{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:14px}.game,.side{background:#191f2e;border:1px solid #30394e;border-radius:18px;overflow:hidden}.gamehead{display:flex;justify-content:space-between;align-items:center;padding:12px 15px;background:#20283a;gap:10px;flex-wrap:wrap}.signal{font-weight:900;letter-spacing:.08em;padding:7px 12px;border-radius:8px;background:#263146}.signal.green{color:#061c10;background:var(--green)}.signal.red{color:white;background:var(--red)}canvas{display:block;width:100%;height:auto;aspect-ratio:800/500;background:#dce6dc;touch-action:none}.controls{padding:12px 15px;display:flex;gap:9px;align-items:center;flex-wrap:wrap}.side{padding:16px}.side h2{font-size:1.05rem;margin:0 0 10px}.field{width:100%;padding:11px 12px;border-radius:10px;border:1px solid #3b4660;background:#101521;color:white;font:inherit;margin:5px 0 9px}.btn{border:0;border-radius:10px;padding:10px 13px;font:700 .95rem system-ui;cursor:pointer;background:#35415b;color:white}.btn:hover{filter:brightness(1.15)}.btn.primary{background:#5d7cff;color:#fff}.btn.green{background:#1e9e61}.btn.red{background:#b9374b}.btn:disabled{opacity:.45;cursor:not-allowed}.row{display:flex;gap:8px}.row>*{flex:1}.small{font-size:.85rem;color:var(--muted);line-height:1.45}.status{padding:10px;border-radius:10px;background:#111724;color:#c9d4ec;min-height:42px;font-size:.9rem;margin:10px 0}.players{padding:0;list-style:none;margin:0}.players li{display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid #30394e;font-size:.92rem}.key{display:inline-block;border:1px solid #4a5670;border-radius:5px;padding:1px 6px;color:white;background:#242d40;font-size:.8rem}.mobile{display:none}.foot{font-size:.8rem;color:#8792aa;margin:12px 2px}
+@media(max-width:760px){.layout{grid-template-columns:1fr}.side{order:2}.mobile{display:block}.side .small{font-size:.9rem}}
+</style>
+</head>
+<body>
+<main>
+  <div class="top"><div><h1>🔴 Red Light, Green Light</h1><p>Race to the finish. Move on green. Freeze on red.</p></div><span class="pill" id="netPill">Not connected</span></div>
+  <div class="layout">
+    <section class="game">
+      <div class="gamehead"><strong id="roundLabel">Waiting for a game</strong><span id="signal" class="signal">WAITING</span><span id="timer">—</span></div>
+      <canvas id="arena" width="800" height="500" aria-label="Top-down race arena"></canvas>
+      <div class="controls">
+        <button class="btn primary" id="startBtn" disabled>Start round</button>
+        <button class="btn" id="resetBtn" disabled>Reset players</button>
+        <span class="small">Move: <span class="key">WASD</span> / <span class="key">↑↓←→</span> · Touch: drag or use arrows</span>
+      </div>
+      <div class="controls mobile">
+        <button class="btn" data-move="up">▲</button><button class="btn" data-move="left">◀</button><button class="btn" data-move="down">▼</button><button class="btn" data-move="right">▶</button>
+      </div>
+    </section>
+    <aside class="side">
+      <h2>Multiplayer room</h2>
+      <div class="row"><button class="btn primary" id="hostBtn">Host game</button><button class="btn" id="joinBtn">Join game</button></div>
+      <label class="small" for="roomInput">Room code</label>
+      <input id="roomInput" class="field" placeholder="Enter host's code" maxlength="6" inputmode="numeric">
+      <div class="row"><button class="btn" id="copyBtn" disabled>Copy code</button><button class="btn" id="disconnectBtn" disabled>Disconnect</button></div>
+      <div class="status" id="status">Host a game, then share the room code with someone on the same Wi-Fi. Both players need internet briefly to establish the peer connection.</div>
+      <h2>Players <span id="playerCount" class="small">(0)</span></h2>
+      <ul class="players" id="playerList"><li><span>You</span><span>Waiting</span></li></ul>
+      <hr style="border:0;border-top:1px solid #30394e;margin:16px 0">
+      <h2>How to play</h2>
+      <p class="small">The host starts each round. The doll switches between green and red at unpredictable intervals. Reach the finish line without moving during red light. Move during red and you're eliminated for that round.</p>
+      <p class="small">This is a browser-to-browser peer connection using PeerJS for connection setup. It does not require a dedicated game server, but room setup needs internet access; gameplay data is sent directly between players.</p>
+    </aside>
+  </div>
+  <div class="foot">Tip: For best results, open this page in a modern browser and allow it to stay in the foreground.</div>
+</main>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+(()=>{
+const canvas=document.getElementById('arena'),ctx=canvas.getContext('2d');
+const $=id=>document.getElementById(id);
+const startBtn=$('startBtn'),resetBtn=$('resetBtn'),hostBtn=$('hostBtn'),joinBtn=$('joinBtn'),copyBtn=$('copyBtn'),disconnectBtn=$('disconnectBtn');
+let peer=null,conn=null,isHost=false,roomCode='',myId='p'+Math.random().toString(36).slice(2,7),players={},phase='waiting',phaseEnds=0,round=0,roundStarted=false,lastTick=performance.now(),lastBroadcast=0,eliminated=false,winner=null;
+const W=800,H=500,START_Y=440,FINISH_Y=75,STEP=2.8;
+const colors=['#5d7cff','#ff9d4d','#bd78ff','#26b9bd','#ff638b','#c8dc50'];
+players[myId]={id:myId,name:'You',x:W/2,y:START_Y,alive:true,finished:false,color:colors[0],moving:false};
+function say(s){$('status').textContent=s}
+function connected(){return !!conn&&conn.open}
+function setNet(s){$('netPill').textContent=s}
+function send(obj){if(connected())try{conn.send(obj)}catch(e){}}
+function rand(a,b){return Math.random()*(b-a)+a}
+function updateButtons(){startBtn.disabled=!isHost||!connected()||phase==='green'||phase==='red';resetBtn.disabled=!isHost||!connected();copyBtn.disabled=!roomCode;disconnectBtn.disabled=!peer}
+function draw(){
+ ctx.clearRect(0,0,W,H);
+ // ground and race lane
+ ctx.fillStyle='#dce6dc';ctx.fillRect(0,0,W,H);
+ ctx.fillStyle='#c9d8c8';for(let y=0;y<H;y+=36){ctx.fillRect(0,y,W,1)}
+ ctx.fillStyle='#b5c8b4';ctx.fillRect(80,45,640,420);
+ ctx.fillStyle='#e5eee0';ctx.fillRect(115,55,570,405);
+ ctx.strokeStyle='#b0c2ad';ctx.lineWidth=2;ctx.setLineDash([8,10]);ctx.beginPath();ctx.moveTo(400,60);ctx.lineTo(400,455);ctx.stroke();ctx.setLineDash([]);
+ // finish line
+ ctx.fillStyle='#fff';ctx.fillRect(115,FINISH_Y-8,570,14);
+ for(let x=115;x<685;x+=20){ctx.fillStyle=(Math.floor((x-115)/20)%2)?'#20252c':'#fff';ctx.fillRect(x,FINISH_Y-8,20,14)}
+ ctx.fillStyle='#25352a';ctx.font='bold 14px system-ui';ctx.fillText('FINISH',360,FINISH_Y-18);
+ ctx.fillStyle='#6c806b';ctx.fillRect(115,START_Y+18,570,3);ctx.fillStyle='#344a36';ctx.fillText('START',360,START_Y+42);
+ // doll at top
+ ctx.save();ctx.translate(400,40);
+ ctx.fillStyle='#27313c';ctx.fillRect(-17,15,34,19);ctx.fillStyle='#e8b18b';ctx.beginPath();ctx.arc(0,0,17,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle='#4d2825';ctx.beginPath();ctx.arc(0,-4,17,Math.PI,Math.PI*2);ctx.fill();
+ ctx.fillStyle=phase==='green'?'#1cbd6a':phase==='red'?'#e63e50':'#e5b84c';ctx.beginPath();ctx.arc(0,0,7,0,Math.PI*2);ctx.fill();
+ ctx.restore();
+ Object.values(players).forEach((p,i)=>{
+  ctx.save();ctx.translate(p.x,p.y);
+  if(!p.alive){ctx.globalAlpha=.42}
+  // shadow
+  ctx.fillStyle='rgba(20,35,25,.18)';ctx.beginPath();ctx.ellipse(0,10,13,6,0,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle=p.color||colors[i%colors.length];ctx.beginPath();ctx.arc(0,0,12,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke();
+  ctx.fillStyle='#fff';ctx.font='bold 10px system-ui';ctx.textAlign='center';ctx.fillText(p.id===myId?'YOU':(p.name||'PLAYER').slice(0,8).toUpperCase(),0,-19);
+  if(p.finished){ctx.fillStyle='#155c39';ctx.font='bold 12px system-ui';ctx.fillText('✓',0,4)}
+  if(!p.alive){ctx.strokeStyle='#a52e40';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(-7,-7);ctx.lineTo(7,7);ctx.moveTo(7,-7);ctx.lineTo(-7,7);ctx.stroke()}
+  ctx.restore();
+ });
+}
+function renderPlayers(){
+ const list=$('playerList');list.innerHTML='';
+ Object.values(players).forEach(p=>{const li=document.createElement('li');const a=document.createElement('span');a.textContent=(p.id===myId?'You':p.name||'Player')+(p.id===myId?' (you)':'');const b=document.createElement('span');b.textContent=p.finished?'Finished':!p.alive?'Eliminated':p.moving?'Moving':'Ready';li.append(a,b);list.append(li)});
+ $('playerCount').textContent='('+Object.keys(players).length+')';
+}
+function syncState(){return {type:'state',players:Object.values(players),phase,phaseEnds,round,roundStarted,winner,hostId:myId}}
+function broadcast(){send(syncState())}
+function startRound(){
+ if(!isHost||!connected())return;
+ round++;roundStarted=true;phase='green';phaseEnds=performance.now()+rand(2500,5000);winner=null;
+ Object.values(players).forEach(p=>{p.x=rand(180,620);p.y=START_Y;p.alive=true;p.finished=false;p.moving=false});
+ say('Round '+round+' started. Move on green, freeze on red!');broadcast();updateButtons();
+}
+function resetPlayers(){
+ if(!isHost)return;phase='waiting';roundStarted=false;winner=null;
+ Object.values(players).forEach(p=>{p.x=rand(180,620);p.y=START_Y;p.alive=true;p.finished=false;p.moving=false});
+ say('Players reset. Start a new round when ready.');broadcast();updateButtons();
+}
+function setPhase(p){phase=p;phaseEnds=performance.now()+ (p==='red'?rand(1800,3500):rand(2200,4500));}
+function hostTick(now,dt){
+ if(!isHost||!roundStarted)return;
+ if((phase==='green'||phase==='red')&&now>=phaseEnds){setPhase(phase==='green'?'red':'green');say(phase==='red'?'RED LIGHT! Freeze!':'GREEN LIGHT! Run!');}
+ const active=Object.values(players).filter(p=>p.alive&&!p.finished);
+ if(active.length===0){phase='ended';roundStarted=false;say('Round over. Host can reset and start again.')}
+ if(winner){phase='ended';roundStarted=false;say((players[winner]?.name||'A player')+' reached the finish! Round over.')}
+ if(now-lastBroadcast>65){broadcast();lastBroadcast=now}
+}
+const keys=new Set();
+function move(dx,dy){
+ const p=players[myId];if(!p||!p.alive||p.finished||!roundStarted||phase==='waiting'||phase==='ended')return;
+ if(phase==='red'){
+  if(dx||dy){p.alive=false;p.moving=false;say('You moved during red light — eliminated this round.');if(isHost)broadcast();else send({type:'move',id:myId,x:p.x,y:p.y,alive:false,finished:false,moving:false})}
+  return;
+ }
+ if(phase!=='green')return;
+ const len=Math.hypot(dx,dy)||1;p.x=Math.max(130,Math.min(670,p.x+dx/len*STEP));p.y=Math.max(FINISH_Y+12,Math.min(START_Y,p.y+dy/len*STEP));p.moving=!!(dx||dy);
+ if(p.y<=FINISH_Y+10){p.y=FINISH_Y+10;p.finished=true;p.moving=false;if(isHost)winner=myId;else send({type:'finish',id:myId});say('You made it to the finish!')}
+ if(isHost)broadcast();else send({type:'move',id:myId,x:p.x,y:p.y,alive:p.alive,finished:p.finished,moving:p.moving});
+}
+function inputTick(){
+ if(!roundStarted)return;
+ let dx=0,dy=0;if(keys.has('w')||keys.has('arrowup'))dy-=1;if(keys.has('s')||keys.has('arrowdown'))dy+=1;if(keys.has('a')||keys.has('arrowleft'))dx-=1;if(keys.has('d')||keys.has('arrowright'))dx+=1;
+ if(dx||dy)move(dx,dy);
+}
+function frame(now){const dt=Math.min(40,now-lastTick);lastTick=now;hostTick(now,dt);inputTick();$('signal').textContent=phase==='green'?'GREEN LIGHT':phase==='red'?'RED LIGHT':phase==='ended'?'ROUND OVER':'WAITING';$('signal').className='signal '+(phase==='green'?'green':phase==='red'?'red':'');$('timer').textContent=(phase==='green'||phase==='red')?Math.max(0,(phaseEnds-now)/1000).toFixed(1)+'s':' ';$('roundLabel').textContent=roundStarted?'Round '+round:phase==='ended'?'Round complete':'Waiting for a game';draw();renderPlayers();updateButtons();requestAnimationFrame(frame)}
+requestAnimationFrame(frame);
+function makePeer(){
+ if(!window.Peer){say('Could not load PeerJS. Check internet access and reload this page.');return null}
+ return new Peer(undefined,{debug:1});
+}
+function wirePeer(p){
+ p.on('error',e=>{say('Connection error: '+e.type+'. Check the code and try again.');});
+ p.on('disconnected',()=>setNet('Reconnecting…'));
+ p.on('close',()=>{setNet('Disconnected')});
+}
+function wireConnection(c,hostSide){
+ conn=c;conn.on('open',()=>{
+  setNet('Connected');say(hostSide?'Player connected! Start when ready.':'Connected to host! Waiting for the next round.');
+  if(hostSide){players[c.peer]={id:c.peer,name:'Player 2',x:rand(180,620),y:START_Y,alive:true,finished:false,color:colors[1],moving:false};broadcast()}
+  else {send({type:'hello',id:myId,name:'Player 2'});}
+  updateButtons();
+ });
+ conn.on('data',msg=>{
+  if(!msg||typeof msg!=='object')return;
+  if(isHost){
+   if(msg.type==='hello'){if(!players[msg.id])players[msg.id]={id:msg.id,name:'Player '+(Object.keys(players).length+1),x:rand(180,620),y:START_Y,alive:true,finished:false,color:colors[Object.keys(players).length%colors.length],moving:false};broadcast()}
+   if(msg.type==='move'&&players[msg.id]){Object.assign(players[msg.id],{x:msg.x,y:msg.y,alive:msg.alive,finished:msg.finished,moving:msg.moving});if(!msg.alive&&phase==='red')say('A player moved during red light!');broadcast()}
+   if(msg.type==='finish'&&players[msg.id]){players[msg.id].finished=true;winner=msg.id;broadcast()}
+  }else if(msg.type==='state'){
+   const self=players[myId];
+   players={};msg.players.forEach(p=>players[p.id]=p);
+   if(self&&!players[myId])players[myId]=self;
+   phase=msg.phase;phaseEnds=performance.now()+Math.max(0,msg.phaseEnds-performance.now());round=msg.round;roundStarted=msg.roundStarted;winner=msg.winner;
+   if(players[myId]){players[myId].id=myId}
+  }
+ });
+ conn.on('close',()=>{setNet('Disconnected');say('Host connection closed. You can join again with a new room code.');conn=null;updateButtons()});
+}
+hostBtn.onclick=()=>{
+ if(peer)peer.destroy();isHost=true;roomCode=String(Math.floor(100000+Math.random()*900000));$('roomInput').value=roomCode;
+ peer=makePeer();if(!peer)return;wirePeer(peer);
+ peer.on('open',id=>{
+  // use generated peer id for robust compatibility; display numeric room code as a friendly code but connect by id encoded in room info
+  roomCode=id; $('roomInput').value=id; $('roomInput').maxLength=80;copyBtn.disabled=false;
+  setNet('Hosting');say('Room created! Share the full room code above. A player can enter it under Join game.');updateButtons();
+ });
+ peer.on('connection',c=>{if(conn&&conn.open){c.close();return}wireConnection(c,true)});
+};
+joinBtn.onclick=()=>{
+ const code=$('roomInput').value.trim();if(!code){say('Enter the host room code first.');return}
+ if(peer)peer.destroy();isHost=false;peer=makePeer();if(!peer)return;wirePeer(peer);
+ peer.on('open',id=>{
+  // Use the actual PeerJS ID as the player's network identity.
+  const oldId=myId;const self=players[oldId];delete players[oldId];myId=id;
+  if(self){self.id=myId;players[myId]=self}
+  setNet('Connecting…');conn=peer.connect(code,{reliable:true});wireConnection(conn,false);
+ });
+};
+startBtn.onclick=startRound;resetBtn.onclick=resetPlayers;
+copyBtn.onclick=()=>{const val=$('roomInput').value;if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(val).then(()=>say('Room code copied. Share it with your friend.')).catch(()=>say('Select and copy the room code manually.'));else say('Select and copy the room code manually.')};
+disconnectBtn.onclick=()=>{if(peer)peer.destroy();peer=null;conn=null;isHost=false;roomCode='';setNet('Disconnected');say('Disconnected.');updateButtons()};
+window.addEventListener('keydown',e=>{const k=e.key.toLowerCase();if(['arrowup','arrowdown','arrowleft','arrowright',' '].includes(k))e.preventDefault();keys.add(k)});
+window.addEventListener('keyup',e=>keys.delete(e.key.toLowerCase()));
+window.addEventListener('blur',()=>keys.clear());
+document.querySelectorAll('[data-move]').forEach(b=>{
+ const dirs={up:[0,-1],down:[0,1],left:[-1,0],right:[1,0]};
+ const press=e=>{e.preventDefault();const d=dirs[b.dataset.move];move(...d)};
+ b.addEventListener('pointerdown',press);
+});
+let drag=null;
+canvas.addEventListener('pointerdown',e=>{drag={x:e.clientX,y:e.clientY};canvas.setPointerCapture(e.pointerId)});
+canvas.addEventListener('pointermove',e=>{if(!drag)return;const dx=e.clientX-drag.x,dy=e.clientY-drag.y;if(Math.hypot(dx,dy)>8){move(Math.sign(dx),Math.sign(dy));drag={x:e.clientX,y:e.clientY}}});
+canvas.addEventListener('pointerup',()=>drag=null);
+})();
+</script>
+</body>
+</html>
